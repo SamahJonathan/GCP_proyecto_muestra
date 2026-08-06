@@ -1,0 +1,70 @@
+# ---------------------------------------------------------------------------
+# Terraform
+# ---------------------------------------------------------------------------
+
+# Proveedores descargados. Pesan cientos de MB y se regeneran con "terraform init".
+**/.terraform/*
+
+# Estado: el inventario de lo que Terraform ha creado en GCP.
+# Contiene en texto plano IDs, IPs y a veces contraseñas generadas.
+*.tfstate
+*.tfstate.*
+
+# Ficheros de plan guardados: son binarios y pueden incluir valores sensibles.
+tfplan
+*.tfplan
+
+# Variables. Suelen tener IDs de proyecto, credenciales o rutas locales.
+*.tfvars
+*.tfvars.json
+
+# Configuración local que sobrescribe la del repositorio.
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Configuración personal del CLI.
+.terraformrc
+terraform.rc
+
+# Registros de errores.
+crash.log
+crash.*.log
+
+# NOTA: .terraform.lock.hcl SÍ debe subirse al repositorio.
+# Es lo que garantiza que todos usen la misma versión del proveedor.
+
+# ---------------------------------------------------------------------------
+# Credenciales — nunca deben subirse
+# ---------------------------------------------------------------------------
+*credentials*.json
+*service-account*.json
+*-key.json
+.env
+.env.*
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# ---------------------------------------------------------------------------
+# Editor y sistema operativo
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# ---------------------------------------------------------------------------
+# Documentación local
+# Notas personales de configuración: contienen correo y rutas del equipo.
+# ---------------------------------------------------------------------------
+docs/
