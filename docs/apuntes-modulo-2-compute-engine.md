@@ -443,8 +443,21 @@ aquí se hace con Python y la librería cliente de Google Cloud.
 Se ordena el repositorio: una carpeta `compute-engine/` donde se meten el script de creación
 de la instancia y el startup script del ejercicio 6, y se añade `backup_vm.py`.
 
-Lo que hace el código: lista los discos, **selecciona el disco** por `project_id`, zona y
-nombre, crea un objeto `Snapshot` y lo **inserta**.
+Lo que hace el código: **construye la ruta del disco** a partir de `project_id`, zona y
+nombre, crea un objeto `Snapshot` que apunta a ella y lo **inserta**.
+
+```python
+disk = f"projects/{project_id}/zones/{zone}/disks/{disk_name}"
+snapshot = compute_v1.Snapshot(name=snapshot_name, source_disk=disk)
+op = snap_client.insert(project=project_id, snapshot_resource=snapshot)
+op.result()   # bloquea hasta que Google termina la copia
+```
+
+> **Un resto que quedó en el script:** la primera línea de la función crea un
+> `compute_v1.DisksClient()` que después **no se usa** —la ruta se arma como texto—. No rompe
+> nada, pero desaprovecha lo único que habría avisado del error del disco que viene más
+> abajo: un `disk_client.get(project=..., zone=..., disk=disk_name)` antes de insertar
+> fallaría al momento y con un mensaje claro.
 
 Como en el ejercicio 3, hay que añadirle la parte de línea de comandos con `argparse`. Los
 cuatro argumentos: `--project-id`, `--disk-name`, `--snapshot-name`, `--zone`.
@@ -453,29 +466,103 @@ cuatro argumentos: `--project-id`, `--disk-name`, `--snapshot-name`, `--zone`.
 pip install google-cloud-compute
 ```
 
-#### Averiguar el nombre del disco
+#### Averiguar los cuatro valores
 
-Es el dato que no se sabe de memoria, y se saca con dos comandos:
+Ninguno de los cuatro se sabe de memoria, y **tres de ellos se pueden consultar** en vez de
+adivinarlos. Los comandos:
 
 ```bash
-gcloud compute instances list                    # ver las instancias
-gcloud compute instances describe servidor-web-1 # ver sus discos y su zona
+gcloud config get-value project                  # el project-id
+gcloud compute disks list                        # los discos, con su zona
+gcloud compute instances describe servidor-web-1 # el detalle de una instancia
 ```
 
-En la salida de `describe` aparecen los discos adjuntos y, **al final**, la zona.
+`gcloud compute disks list` es el atajo bueno: da nombre, zona y tamaño de todos los discos
+en una tabla, que es justo lo que pide el script.
 
-#### Los cuatro tropiezos, que son la parte útil
+Estos fueron los valores reales de este proyecto:
+
+| Argumento | Valor | De dónde sale |
+|---|---|---|
+| `--project-id` | `gcp-data-engineer-muestra` | `gcloud config get-value project` |
+| `--disk-name` | `servidor-web-1` | `gcloud compute disks list` |
+| `--zone` | `us-east1-b` | La misma tabla — **no `us-central1`**, ver el ejercicio 4 |
+| `--snapshot-name` | `backup-servidor-web-1` | Lo eliges tú |
+
+#### `deviceName` no es el nombre del disco
+
+El error más fácil de cometer aquí. En la salida de `instances describe`, el bloque `disks`
+trae dos nombres distintos:
+
+```yaml
+disks:
+- deviceName: persistent-disk-0
+  source: .../zones/us-east1-b/disks/servidor-web-1
+```
+
+| Campo | Qué es | ¿Sirve para `--disk-name`? |
+|---|---|---|
+| `deviceName` | Cómo ve el disco **el sistema operativo de la VM**, por dentro | **No** |
+| `source` | La ruta del **recurso en GCP** | **Sí** — el nombre es lo que va tras `/disks/` |
+
+Un `--disk-name persistent-disk-0` falla con *no se encuentra el disco*, y el mensaje no
+explica por qué. Por defecto el disco de arranque se llama **igual que la instancia**.
+
+#### Los tropiezos, que son la parte útil
 
 | Síntoma | Causa | Arreglo |
 |---|---|---|
 | El script no acepta los valores | Se pasaron como posicionales | Usar los flags: `--project-id`, `--disk-name`... |
+| `ImportError: cannot import name 'compute_v1'` | Falta la librería | `pip install google-cloud-compute` |
 | Error de API deshabilitada | Falta `compute.googleapis.com` | **Añadirla al `main.tf` de Terraform**, no habilitarla a mano |
-| Error de proyecto | Project ID sin el sufijo `-01` | Corregirlo |
-| `No se encuentra el disco` | El nombre del disco era de otra instancia | Consultar el nombre real en la consola |
+| Error de proyecto | Project ID escrito de memoria | Consultarlo con `gcloud config get-value project` |
+| `No se encuentra el disco` | Se usó el `deviceName` | Usar el nombre real, el de `source` |
+| Zona inexistente | Escrita `us-central-1-a`, con guion de más | `us-east1-b` — región junta, luego la letra |
+| `can't open file` | Se lanzó desde la carpeta equivocada | `cd compute-engine` antes, o pasar la ruta completa |
 
-El segundo es el que enseña algo de criterio: cuando falta una API, la tentación es darle a
+El de la API es el que enseña algo de criterio: cuando falta una API, la tentación es darle a
 *Habilitar* en la consola. Añadirla al `main.tf` mantiene el entorno **reproducible** —el
 siguiente que clone el repo tendrá la API activada sin saber que hacía falta.
+
+El del `can't open file` parece tonto, pero es constante: `python3 backup_vm.py` busca el
+archivo **en el directorio donde estás**, no en el repositorio entero.
+
+#### La ejecución que funcionó
+
+```bash
+cd compute-engine
+python3 backup_vm.py \
+  --project-id gcp-data-engineer-muestra \
+  --disk-name servidor-web-1 \
+  --snapshot-name backup-servidor-web-1 \
+  --zone us-east1-b
+```
+
+Tarda un rato **sin imprimir nada**, y es normal: el `op.result()` del script bloquea hasta
+que Google termina la copia. Al acabar:
+
+```
+Snapshot 'backup-servidor-web-1' creado para el disco 'servidor-web-1' en el proyecto 'gcp-data-engineer-muestra'.
+```
+
+Ese mensaje lo escribe el propio script, así que conviene comprobarlo por fuera:
+
+```bash
+gcloud compute snapshots list
+```
+
+```
+NAME                   DISK_SIZE_GB  SRC_DISK                         STATUS
+backup-servidor-web-1  10            us-east1-b/disks/servidor-web-1  READY
+```
+
+`READY` es la confirmación de verdad. La instancia estaba **`TERMINATED`** en ese momento y
+el snapshot se hizo igual: el disco es un recurso independiente de la máquina, que es
+justo la teoría del principio del ejercicio.
+
+> El `--snapshot-name` lo eliges tú, y por eso es el sitio más fácil para repetir el error
+> del ejercicio 4: sigue la misma regla de nombres de GCP —minúsculas, números y `-`—. Un
+> `backup_servidor_web` sería rechazado por el mismo regexp.
 
 #### Y un hábito que copiar
 
@@ -511,9 +598,69 @@ Además permite **autenticación en dos factores**.
 El cambio de fondo: el acceso deja de ser un archivo repartido por las máquinas y pasa a ser
 una **consulta a IAM**. Revocar es un solo gesto en un solo sitio.
 
+### Qué es exactamente la metadata
+
+El ejercicio se apoya en un concepto que ya se había usado dos veces sin nombrarlo. La
+**metadata** es un almacén de pares **clave = valor** que cuelga de un recurso de GCP. Nada
+más que eso.
+
+Lo interesante es cómo llega a la máquina: dentro de toda VM hay un **servidor de metadata**
+en una dirección fija, `169.254.169.254`, y un proceso de Google —el *guest agent*— que lo
+lee y actúa según lo que encuentra. Ese es el canal por el que se configura una VM **desde
+fuera**, sin entrar en ella.
+
+| Clave | Quién la lee | Qué provoca |
+|---|---|---|
+| `startup-script` | El agente, al arrancar | Ejecuta el script como root (ejercicio 6, el nginx) |
+| `ssh-keys` | El agente, en marcha | Escribe esas claves públicas en `~/.ssh/authorized_keys` |
+| `enable-oslogin` | El agente | Cambia el sistema de autenticación entero |
+
+Y tiene **dos niveles**, con una regla de precedencia:
+
+| Nivel | Alcance |
+|---|---|
+| Proyecto | Lo heredan **todas** las instancias |
+| Instancia | Solo esa máquina, y **gana** sobre lo del proyecto si chocan |
+
+> **La metadata no valida las claves, y eso hace daño.** Le pones `enable-os-login` en vez
+> de `enable-oslogin` y responde *actualizado* tan tranquila: para ella es una clave más. El
+> que decide si una clave significa algo es el agente que la lee, y ese simplemente no
+> encuentra la que busca. Error invisible, de la misma familia que el `region = "us-central"`
+> del módulo 0.
+
+### OS Login no está por encima de IAM: le pregunta a IAM
+
+La confusión típica es pensar que son dos sistemas compitiendo. No lo son:
+
+- **IAM es la lista de invitados.** Es donde está escrito quién tiene permiso. Es la autoridad.
+- **OS Login es el portero** que consulta esa lista cada vez que alguien llama a la puerta.
+
+El portero no manda más que la lista; lo que hace es **obligar a que se consulte**, en vez de
+dejar entrar a cualquiera que traiga una llave copiada de antes.
+
+Lo que OS Login sí desbanca es **la metadata `ssh-keys`**:
+
+```
+Sin OS Login:  ¿tienes una clave en la metadata?     -> entras
+Con OS Login:  ¿tienes el rol IAM en el proyecto?    -> entras
+```
+
+Y la prueba de que IAM es quien manda es que OS Login **por sí solo no deja entrar a nadie**.
+Hace falta además el rol:
+
+| Rol IAM | Qué concede |
+|---|---|
+| `roles/compute.osLogin` | Entrar por SSH como usuario normal, **sin sudo** |
+| `roles/compute.osAdminLogin` | Entrar **con sudo** |
+
+En este proyecto se entra por ser `roles/owner`, que ya los incluye.
+
+**La forma corta: IAM decide, OS Login aplica.** OS Login es el punto donde una regla de IAM
+se convierte en un usuario de Linux con su UID y su home.
+
 ### La práctica
 
-Primero, **arrancar la instancia del ejercicio 6**, que se había parado.
+Primero, **arrancar la instancia del ejercicio 6**, que se había parado tras el snapshot.
 
 Un `os-login-ssh.sh` con dos comandos, y no hace falta más:
 
@@ -523,11 +670,50 @@ gcloud compute project-info add-metadata \
     --metadata enable-oslogin=TRUE
 
 # 2. Conectarse
-gcloud compute ssh servidor-web-1
+gcloud compute ssh servidor-web-1 --zone=us-east1-b
 ```
 
-Con OS Login habilitado en el proyecto, la conexión al servidor del ejercicio 6 funciona
-directamente. Dentro se comprueba el nginx que instaló el startup script:
+#### El ejercicio hecho al revés, que resultó ser la mejor demostración
+
+Aquí pasó algo útil por accidente. El primer comando falló por una errata
+(`project-onfo`), se pasó directo al `ssh` sin darse cuenta, y la conexión **funcionó
+igual**. Comparando las dos conexiones se ve la diferencia entera:
+
+| | 1ª conexión (sin OS Login) | 2ª conexión (con OS Login) |
+|---|---|---|
+| Mensaje de `gcloud` | `Updating project ssh metadata...` | *no aparece* |
+| Usuario dentro | `jona@servidor-web-1` | `jona_samah_gmail_com@servidor-web-1` |
+| Qué pasó de fondo | Subió la clave pública a la metadata del proyecto | Validó la identidad contra IAM |
+
+Ese cambio en el prompt es toda la teoría en una línea: el usuario de Linux ya no es el
+local, es el que Google **deriva de la cuenta** `jona.samah@gmail.com`.
+
+En la segunda conexión apareció además:
+
+```
+Creating directory '/home/jona_samah_gmail_com'
+```
+
+Nadie creó ese usuario a mano: Google generó la **cuenta POSIX** —usuario, UID y home— en el
+momento de validar la identidad. Con una cuenta de Workspace el nombre sería solo
+`jona_samah`; el correo entero, con los puntos y la arroba convertidos en guiones bajos,
+es lo que toca por usar un Gmail personal.
+
+Para verificar sin depender del prompt:
+
+```bash
+# ¿Está puesta la clave? Si solo sale "ssh-keys", OS Login NO está activo.
+gcloud compute project-info describe --format="value(commonInstanceMetadata.items[].key)"
+
+# El perfil POSIX que Google gestiona
+gcloud compute os-login describe-profile
+```
+
+> **El detalle que remata la teoría:** tras activar OS Login, la clave en `ssh-keys` **seguía
+> estando** en la metadata del proyecto, y aun así la entrada fue como
+> `jona_samah_gmail_com`. La llave vieja no desapareció: dejó de decidir.
+
+Dentro se comprueba el nginx que instaló el startup script:
 
 ```bash
 sudo -i

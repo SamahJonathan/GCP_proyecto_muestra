@@ -358,6 +358,28 @@ Que la red existe de verdad se confirma solo en el ejercicio siguiente: el
 `firewall-rules create --network=mi-vpc-curso` habría fallado con *network not found* si el
 `apply` no hubiera terminado bien.
 
+#### Aviso: hoy hay dos subredes, no una
+
+Este apartado describe el estado del ejercicio 4, pero **la VPC creció después**. Al llegar
+al módulo 2, `us-central1` se quedó sin capacidad de `e2-micro`
+(`ZONE_RESOURCE_POOL_EXHAUSTED`) y hubo que añadir una segunda subred en otra región:
+
+| Subred | Región | Rango |
+|---|---|---|
+| `subred-us` | `us-central1` | `10.0.1.0/24` |
+| `subred-us-east` | `us-east1` | `10.0.2.0/24` |
+
+El porqué, las tres alternativas que se barajaron y el *drift* de Terraform que provocó están
+contados en el módulo 2:
+[`apuntes-modulo-2-compute-engine.md`](apuntes-modulo-2-compute-engine.md) → *«Añadido fuera
+del curso — `ZONE_RESOURCE_POOL_EXHAUSTED` y el cambio a us-east1»*.
+
+Lo que conviene retener **aquí**, porque confirma la teoría de este ejercicio: mudarse de
+región **no** obligó a crear otra red, solo a colgar otra subred de la misma `mi-vpc-curso`.
+La VPC es global, las subredes son regionales. Y a partir de ese punto **todo el módulo 2
+vive en `us-east1`**: si un comando falla con *not found*, lo primero que hay que mirar es si
+se quedó apuntando a `us-central1`.
+
 Commit `curso 04`. En GitHub, el `network.tf` queda dentro de `setup-terraform`.
 
 > **Detalle a tener en cuenta:** la teoría plantea *borrar la red `default`* y diseñar desde
