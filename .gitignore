@@ -64,7 +64,8 @@ env/
 .DS_Store
 
 # ---------------------------------------------------------------------------
-# Documentación local
-# Notas personales de configuración: contienen correo y rutas del equipo.
+# Documentación
+# docs/ SI se versiona: son los apuntes del curso y valen tanto como el código.
+# Se revisó su contenido y no hay credenciales ni rutas locales; el único dato
+# personal es el correo, que de todos modos ya firma cada commit.
 # ---------------------------------------------------------------------------
-docs/
