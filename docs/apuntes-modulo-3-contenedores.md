@@ -8,10 +8,13 @@ El hilo del curso avanza un escalón: el módulo 2 iba de **máquinas** (tú ges
 sistema operativo); este va de **contenedores** (tú entregas la aplicación y la plataforma
 se encarga del resto).
 
-> **Estos apuntes son de la transcripción, no de una ejecución propia.** Cuando este
-> proyecto haga los ejercicios habrá que revisar dos cosas que ya cambiaron en el módulo 2:
-> la región (aquí todo es `us-central1`, y este proyecto trabaja en **`us-east1`**) y el
-> coste, que en este módulo deja de ser cero.
+> **Cómo leer estos apuntes.** La base es la transcripción del curso; los bloques marcados
+> con **🔧** son de la ejecución real en este proyecto y no salen en el vídeo. Los ejercicios
+> **10 y 11 ya se hicieron**; el 12 y el 13, todavía no.
+>
+> Dos cosas cambian respecto del vídeo en todo el módulo: la **región** (el curso usa
+> `us-central1` y este proyecto trabaja en **`us-east1`**) y el **coste**, que aquí deja de
+> ser cero.
 
 ---
 
@@ -118,6 +121,20 @@ Los dos se instalan con `gcloud components install` y el propio comando lo ofrec
 sí y descarga, instala y hace *postprocessing*. Después hay que **relanzar el
 `get-credentials`**.
 
+> **🔧 En Fedora el `gcloud components install` no funciona.** Si el SDK se instaló **por
+> repositorio** (`dnf`, que es como se hizo en el módulo 0), el gestor de componentes viene
+> **desactivado a propósito**: los paquetes los administra el sistema, no `gcloud`. El propio
+> error da el comando equivalente:
+>
+> | En el vídeo | En este proyecto (Fedora) |
+> |---|---|
+> | `gcloud components install gke-gcloud-auth-plugin` | `sudo dnf install google-cloud-cli-gke-gcloud-auth-plugin` |
+> | `gcloud components install kubectl` | `sudo dnf install kubectl` |
+>
+> **Ojo con el segundo:** hay dos paquetes que se llaman parecido. El bueno es `kubectl` del
+> repositorio **`google-cloud-sdk`**; el `kubernetes1.30-client` de los repos de Fedora es
+> otro, con la versión clavada.
+
 > **Por qué existe ese plugin de autenticación.** `kubectl` es una herramienta genérica, no
 > sabe nada de Google. El plugin es lo que traduce tu identidad de Google a un token que el
 > clúster entiende. Es el mismo patrón que OS Login del ejercicio 9: la autorización la
@@ -131,6 +148,43 @@ kubectl get nodes        # aparece el nodo del cluster creado con Terraform
 ```
 
 Commit `curso 10`.
+
+### 🔧 Añadido fuera del curso — el clúster acabó en la red `default`
+
+*(2026-08-17. Se detectó al diagnosticar el ejercicio 11.)*
+
+El `gke.tf` no declara `network` ni `subnetwork`, así que **GKE cogió la VPC `default` del
+proyecto** — justo la que el módulo 1 decidió no usar. Se ve en dónde viven las reglas que
+GKE crea solo:
+
+```
+NAME                              NETWORK
+gke-mi-cluster-gke-a0dffad7-all   default      <-- no mi-vpc-curso
+gke-mi-cluster-gke-a0dffad7-vms   default
+k8s-fw-a13d7592a77494dcd8...      default
+```
+
+Funciona, pero deja el clúster **fuera de la red que se diseñó**: sus nodos no tienen nada
+que ver con `subred-us` ni con `subred-us-east`, y no pueden hablar por IP privada con
+`servidor-web-1`. Para que estuviera dentro habría que declararlo:
+
+```hcl
+resource "google_container_cluster" "primary" {
+    name       = "mi-cluster-gke"
+    location   = "us-east1-b"
+    network    = google_compute_network.vpc_network.id
+    subnetwork = google_compute_subnetwork.subnet_us_east.id
+    ...
+}
+```
+
+> **Y no se arregla editando el `.tf`.** La red de un clúster es **inmutable**: cambiarla
+> obliga a **destruir y recrear** el clúster entero. Es el mismo tipo de campo que el
+> `name_prefix` de las instance templates del módulo 2 — hay atributos que no se modifican,
+> se reemplazan.
+
+Datos reales del clúster creado: `mi-cluster-gke`, en **`us-east1-b`** (adaptado a la región
+de este proyecto, no el `us-central1-a` del vídeo), **1 nodo** `e2-medium`.
 
 > **⚠️ Coste — lo más importante de este ejercicio.** Un clúster de GKE **no es la capa
 > gratuita**. Hay dos facturas: la del **control plane** (la capa gratuita cubre un clúster
@@ -192,6 +246,70 @@ kubectl get pods    # nginx-app ... Running ... 42s
 Cuando la IP externa aparece, se copia al navegador y sale el **«Welcome to nginx!»**.
 
 Commit `curso 11`.
+
+### 🔧 Lo que se aprendió al ejecutarlo de verdad
+
+**La `EXTERNAL-IP` tardó 49 segundos.** Con `kubectl get services -w` (*watch*) el comando se
+queda escuchando e imprime una línea cada vez que algo cambia, así que se ve la transición:
+
+```
+nginx-deployment   LoadBalancer   34.118.226.226   <pending>     80:30877/TCP    9s
+nginx-deployment   LoadBalancer   34.118.226.226   <pending>     80:30877/TCP   49s
+nginx-deployment   LoadBalancer   34.118.226.226   34.23.7.149   80:30877/TCP   49s
+```
+
+Tres detalles de esa tabla:
+
+| Qué | Qué significa |
+|---|---|
+| El servicio `kubernetes` que también aparece | Es el del propio clúster (la API), viene de fábrica y es `ClusterIP` |
+| `80:30877/TCP` | **Dos** puertos: el 80 por el que entras tú y el *NodePort* que Kubernetes abre en cada nodo para enrutar hacia los pods. El alto lo asigna él |
+| `--target-port 80` | El puerto donde escucha nginx **dentro** del contenedor. Aquí coincide con el de fuera; si la app escuchara en 8080, esa sería la diferencia |
+
+#### GKE crea sus reglas de firewall solo
+
+Contraste con el módulo 1, donde cada regla se escribió a mano: al exponer el service, GKE
+creó **dos** reglas automáticamente, y conviene entender el par:
+
+| Regla | Prioridad | Efecto |
+|---|---|---|
+| `k8s-fw-<hash>` | **999** | Permite `tcp:80` desde `0.0.0.0/0` |
+| `k8s-fw-<hash>-deny` | 1000 | Deniega todo lo demás |
+
+Asusta ver un `deny` con `0.0.0.0/0`, pero **el número más bajo gana**: la de permitir tiene
+prioridad 999 y va primero. Es el patrón normal de GKE — abrir exactamente el puerto del
+service y cerrar el resto.
+
+#### Cuando el navegador da `ERR_TIMED_OUT` y no es culpa de GCP
+
+Pasó, y el diagnóstico completo salió limpio. La secuencia de comprobación, de fuera hacia
+dentro, sirve para cualquier service que no responda:
+
+```bash
+kubectl get pods -o wide                      # ¿el pod está Running 1/1?
+kubectl get endpoints nginx-deployment        # ¿el service apunta a alguna IP de pod?
+gcloud compute target-pools get-health <lb> --region=...   # ¿el balanceador ve la instancia HEALTHY?
+curl -I http://IP-EXTERNA                     # ¿responde desde fuera del navegador?
+```
+
+Todo dio bien —pod `1/1`, endpoint `10.64.0.13:80`, instancia `HEALTHY`, y `curl` devolvió
+`HTTP/1.1 200 OK`—, así que el problema estaba **en el navegador**: el mismo forzado a HTTPS
+del ejercicio 6, más la caché del intento hecho mientras el balanceador aún se propagaba.
+
+> **La lección de método:** `curl` es el árbitro. Si `curl` responde y el navegador no, deja
+> de tocar la infraestructura — el fallo está en tu lado.
+
+#### El orden para bajarlo, que importa
+
+```bash
+kubectl delete service nginx-deployment      # PRIMERO: se lleva el balanceador y la IP
+kubectl delete deployment nginx-deployment
+terraform destroy -target=google_container_cluster.primary
+```
+
+Si se destruye el clúster con el `Service` de tipo LoadBalancer todavía vivo, el balanceador
+puede quedarse **huérfano** en el proyecto, facturando sin que nada lo reclame. Aparecen
+luego con `gcloud compute forwarding-rules list`.
 
 > **La comparación que cierra el círculo.** En el ejercicio 6 conseguir ese mismo *Welcome
 > to nginx* costó: crear una VM, escribir un startup script, esperar al `apt-get`, poner un
